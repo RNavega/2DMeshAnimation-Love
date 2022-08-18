@@ -1,37 +1,33 @@
 --[[
     Fast animated 2D mesh using skeletal and shape key (AKA morph target) deformations.
-    Assets and code by Rafael Navega, 2020.
-    Version 1.1.0.
+    Assets and code by Rafael Navega, 2022.
+    Version 1.2.0 (2022-08-18)
+
+    LICENSE: Public Domain.
 ]]
 
 io.stdout:setvbuf("no")
 
 
---[[
-    Choice of CPU or GPU skinning:
-    Uncomment the line below that loads the module that you want to test, and comment the other one out.
-]]
 local modelLib = require('model-cpu') -- CPU / software skinning.
---local modelLib = require('model-gpu') -- GPU skinning. On my system this is about 9x faster than 'model-cpu'.
 
-
-local FRAME_TIME = 1.0 / 30.0
-
-local model = {}
+local model
 
 local showDebug = false
 local showBoneResult = true
 local showShapekeyResult = true
 
+local tempTransform
+
 
 function love.load()
     model = modelLib.loadModel()
+    tempTransform = love.math.newTransform()
 end
 
 
 function love.update(dt)
-    model:advanceFrame(dt, FRAME_TIME)
-    model:setFrame(model.currentFrame, showShapekeyResult, showBoneResult)
+    model:advanceFrame(dt, showShapekeyResult, showBoneResult)
 end
 
 
@@ -41,20 +37,20 @@ function love.draw()
     love.graphics.clear(0.0, 0.01, 0.05)
     love.graphics.setColor(1.0, 1.0, 1.0)
 
-    love.graphics.print(string.format('Current frame: %d / %d', model.currentFrame, model.totalFrames), 10, 10)
-    love.graphics.print(
-        'Hold Left to disable shape key influence. ' .. ((showShapekeyResult and '(Shape keys ON)') or '(Shape keys OFF)'),
-        10, 30
-    )
-    love.graphics.print(
-        'Hold Right to disable bone influence. ' .. ((showBoneResult and '(Bones ON)') or '(Bones OFF)'), 10, 50
-    )
-    love.graphics.print('Hold any other key to show debug info. ' .. ((showDebug and '(ON)') or '(OFF)'), 10, 70)
-    love.graphics.print('Press Esc or Alt+F4 to quit.', 10, 90)
+    love.graphics.print(string.format('Current frame: %.3f / %.1f', model.currentFrame, model.totalFrames),
+                        10, 10)
+    love.graphics.print('Hold Left to disable shape key influence. (Shape keys '..
+                        (showShapekeyResult and 'ON)' or 'OFF)'), 10, 30)
+    love.graphics.print('Hold Right to disable bone influence. (Bones '..
+                        (showBoneResult and 'ON)') or 'OFF)', 10, 50)
+    love.graphics.print('Hold Down to slow down the model framerate. (Frame rate: '..
+                        tostring(model.fps)..')', 10, 70)
+    love.graphics.print('Hold any other key to show debug info. ('..
+                        (showDebug and 'ON)' or 'OFF)'), 10, 90)
+    love.graphics.print('Press Esc or Alt+F4 to quit.', 10, 110)
 
+    -- Draw the animated model.
     love.graphics.translate(love.graphics.getWidth() / 2, love.graphics.getHeight() / 2)
-    
-    -- When using module 'model-gpu' this draw function also sends the shader uniform data.
     model:draw(showShapekeyResult, showBoneResult)
 
     -- Debug information.
@@ -69,16 +65,23 @@ function love.draw()
         love.graphics.setColor(1.0, 0.0, 0.0)
 
         local BONE_LENGTH = 32.0
-        for index = 1, model.totalBones do
-            local boneData = model.bones[index]
-            local tform = (showBoneResult and boneData.frames[model.currentFrame]) or boneData.baseTransform
-            local headX = tform[1]
-            local headY = tform[2]
-            local boneAimAngle = tform[3]
-            local tailX = headX + math.cos(boneAimAngle) * BONE_LENGTH
-            local tailY = headY + math.sin(boneAimAngle) * BONE_LENGTH
-            love.graphics.circle('line', headX, headY, 6)
-            love.graphics.line(headX, headY, tailX, tailY)
+        for zeroBindIndex = 0, model.bindData.totalBinds-1 do
+            if showBoneResult then
+                love.graphics.origin()
+                local frameTF = model.bindData.frameArrays[zeroBindIndex]
+                local tfIndex = (math.floor(model.currentFrame) - 1) * 5 + 1
+                tempTransform:setTransformation(frameTF[tfIndex], frameTF[tfIndex+1],
+                                            frameTF[tfIndex+2],
+                                            frameTF[tfIndex+3], frameTF[tfIndex+4])
+            else
+                love.graphics.origin()
+                tempTransform:reset()
+                tempTransform:apply(model.bindData.debugTransforms[zeroBindIndex])
+            end
+            love.graphics.translate(love.graphics.getWidth() / 2, love.graphics.getHeight() / 2)
+            love.graphics.applyTransform(tempTransform)
+            love.graphics.circle('line', 0, 0, 6)
+            love.graphics.line(0, 0, BONE_LENGTH, 0)
         end
     end
 end
@@ -91,6 +94,8 @@ function love.keypressed(key)
         showShapekeyResult = false
     elseif key == 'right' then
         showBoneResult = false
+    elseif key == 'down' then
+        model.fps = 6.0
     else
         showDebug = true
     end
@@ -102,31 +107,34 @@ function love.keyreleased(key)
         showShapekeyResult = true
     elseif key == 'right' then
         showBoneResult = true
+    elseif key == 'down' then
+        model.fps = 30.0
     else
         showDebug = false
     end
 end
 
 
--- Custom love.run with frame limiting.
+-- Custom love.run.
 function love.run()
-    if not love.timer or not love.event or not love.graphics then
-        error('Modules not enabled')
+    if not (love.timer and love.event and love.graphics) then
+        error('LÖVE modules not enabled')
     end
 
-	if love.load then love.load(love.arg.parseGameArguments(arg), arg) end
+    if love.load then love.load(love.arg.parseGameArguments(arg), arg) end
 
-	-- Main loop.
-	return function()
+        -- Main loop.
+    return function()
         local timerStep = love.timer.step
-        local timerSleep = love.timer.sleep
         local eventPump = love.event.pump
         local eventPoll = love.event.poll
         local eventHandlers = love.handlers
-        local dt1 = 0.0
-        local dt2 = 0.0
-        local sleepTime = 0.0
-    
+        local loveUpdate = love.update
+        local loveDraw = love.draw
+        local graphicsPresent = love.graphics.present
+
+        timerStep()
+
         while true do
             eventPump()
             for name, a,b,c,d,e,f in eventPoll() do
@@ -139,19 +147,10 @@ function love.run()
             end
 
             -- Call update and draw.
-            dt1 = timerStep()
-            love.update(dt1+dt2)
-
-            if love.graphics.isActive() then
-                love.draw()
-                love.graphics.present()
-            end
-            
-            dt2 = timerStep()            
-            sleepTime = FRAME_TIME - (dt1+dt2)
-            if sleepTime > 0.0 then
-               timerSleep(sleepTime)
-            end
+            -- Frame limiting is done by the VSYNC option set in conf.lua.
+            loveUpdate(timerStep())
+            loveDraw()
+            graphicsPresent()
         end
-	end
+    end
 end

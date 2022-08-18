@@ -1,5 +1,5 @@
 function love.conf(t)
-	t.console = false
-    t.window.vsync = 1
+	--t.console = true
+    t.window.vsync = 2
     t.window.title = '2D Mesh Animation Demo'
 end
